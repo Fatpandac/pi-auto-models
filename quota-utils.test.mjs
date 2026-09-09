@@ -99,6 +99,38 @@ test('formatWindowLabel labels windows by real duration, not position', async ()
   assert.equal(formatWindowLabel(30 * 24 * 3600), '30d');
 });
 
+test('picks the 5h window for the status bar, ignoring weekly-only data', () => {
+  const { claudeSessionPercent, codexSessionPercent } = quotaUtils;
+
+  assert.equal(claudeSessionPercent({ limits: [{ kind: 'weekly_all', percent: 80 }, { kind: 'session', percent: 42.4 }] }), 42);
+  assert.equal(claudeSessionPercent({ limits: [{ kind: 'weekly_all', percent: 80 }] }), undefined);
+  assert.equal(
+    codexSessionPercent({
+      rate_limit: {
+        primary_window: { used_percent: 13.6, limit_window_seconds: 5 * 3600, reset_after_seconds: 3600 },
+        secondary_window: { used_percent: 70, limit_window_seconds: 7 * 24 * 3600, reset_after_seconds: 5 * 24 * 3600 },
+      },
+    }),
+    14,
+  );
+  // Codex may report a 5h window duration while only the weekly window is live.
+  assert.equal(
+    codexSessionPercent({
+      rate_limit: { primary_window: { used_percent: 13, limit_window_seconds: 5 * 3600, reset_after_seconds: 6 * 24 * 3600 } },
+    }),
+    undefined,
+  );
+});
+
+test('status bar shows 5h usage and handles API-key accounts without limits', () => {
+  const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+
+  assert.match(source, /setStatus\(QUOTA_STATUS_KEY/);
+  assert.match(source, /isUsingOAuth\?\.\(model\) === false/);
+  assert.match(source, /5h \u221e \(API key\)|5h ∞ \(API key\)/);
+  assert.match(source, /pi\.on\("agent_end"/);
+});
+
 test('/usage renders each provider account once', () => {
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
 

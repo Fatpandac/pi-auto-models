@@ -15,6 +15,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Text, SelectList, type SelectItem, matchesKey, Key } from "@earendil-works/pi-tui";
 import {
+  claudeSessionPercent,
+  codexSessionPercent,
   getPassiveRateLimitCooldownMs,
   isClaudeUsageAvailable,
   isProviderRateLimitError,
@@ -77,6 +79,30 @@ async function setModelTo(
   return true;
 }
 
+// ── 5h usage status bar ──
+
+const QUOTA_STATUS_KEY = "auto-model-5h";
+const QUOTA_STATUS_TTL_MS = 60_000;
+
+function setQuotaStatus(ctx: ExtensionContext, pct: number | undefined): void {
+  const { ui } = ctx;
+  if (pct === undefined) {
+    ui.setStatus(QUOTA_STATUS_KEY, ui.theme.fg("dim", "5h ?"));
+    return;
+  }
+  const color = pct >= 90 ? "error" : pct >= 70 ? "warning" : "success";
+  ui.setStatus(QUOTA_STATUS_KEY, ui.theme.fg(color, `5h ${pct}%`));
+}
+
+/** Live 5h usage for OAuth (subscription) accounts; undefined when the provider has no session window. */
+async function fetch5hPercent(provider: string): Promise<number | undefined> {
+  const entry = readAuth()[provider];
+  if (!entry || Date.now() > entry.expires) return undefined;
+  if (provider === DEFAULT_PRIMARY_PROVIDER) return claudeSessionPercent(await fetchClaudeUsage(entry));
+  if (provider === DEFAULT_FALLBACK_PROVIDER) return codexSessionPercent(await fetchCodexUsage(entry));
+  return undefined;
+}
+
 // ── Extension ──
 
 export default function (pi: ExtensionAPI) {
@@ -91,6 +117,31 @@ export default function (pi: ExtensionAPI) {
   let usingClaude = false;
   let lastRequestProvider: string | undefined;
   const rateLimits = new Map<string, RateLimitInfo>(Object.entries(readRateLimits()));
+  let quotaStatusAt = 0;
+  let quotaStatusProvider: string | undefined;
+
+  /** Refresh the footer 5h usage for the active model; API-key accounts have no session limit. */
+  async function refreshQuotaStatus(ctx: ExtensionContext, force = false): Promise<void> {
+    const model = ctx.model;
+    if (!model) return;
+    const providerChanged = model.provider !== quotaStatusProvider;
+    if (!force && !providerChanged && Date.now() - quotaStatusAt < QUOTA_STATUS_TTL_MS) return;
+    quotaStatusAt = Date.now();
+    quotaStatusProvider = model.provider;
+
+    if (ctx.modelRegistry.isUsingOAuth?.(model) === false) {
+      ctx.ui.setStatus(QUOTA_STATUS_KEY, ctx.ui.theme.fg("dim", "5h ∞ (API key)"));
+      return;
+    }
+    try {
+      setQuotaStatus(ctx, await fetch5hPercent(model.provider));
+    } catch {
+      // Live endpoint unavailable → fall back to passively captured headers.
+      const cached = rateLimits.get(model.provider);
+      const usable = cached?.utilization && !isRateLimitInfoStale(cached);
+      setQuotaStatus(ctx, usable ? Math.round(Number(cached!.utilization) * 100) : undefined);
+    }
+  }
 
   pi.on("before_provider_request", (event, ctx) => {
     lastRequestProvider = event.model?.provider ?? ctx.model?.provider ?? lastRequestProvider;
@@ -138,6 +189,11 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
+    await refreshQuotaStatus(ctx, true);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    await refreshQuotaStatus(ctx);
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -455,6 +511,7 @@ export default function (pi: ExtensionAPI) {
       writeConfig(newCfg);
 
       ctx.ui.notify(`${slot === "primary" ? "Primary" : "Fallback"} set to ${model} (${thinkingLevel})`, "info");
+      await refreshQuotaStatus(ctx, true);
     },
   });
 
@@ -472,6 +529,12 @@ export default function (pi: ExtensionAPI) {
         writeRateLimits(rateLimits);
         const passiveLeft = getPassiveRateLimitCooldownMs(info);
         if (passiveLeft > 0) setProviderRateLimit(provider, Date.now() + passiveLeft);
+        // Free real-time 5h number, no extra request needed.
+        if (info.utilization && provider === ctx.model?.provider) {
+          quotaStatusAt = Date.now();
+          quotaStatusProvider = provider;
+          setQuotaStatus(ctx, Math.round(Number(info.utilization) * 100));
+        }
       }
     }
 

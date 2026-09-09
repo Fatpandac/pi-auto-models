@@ -39,6 +39,31 @@ export function isClaudeUsageAvailable(usage: { limits?: { percent?: number }[] 
   return usage.limits.every((limit) => (limit.percent ?? 0) < 100);
 }
 
+/** 5h ("session") usage percent from the Anthropic OAuth usage payload. */
+export function claudeSessionPercent(
+  usage: { limits?: { kind?: string; percent?: number }[] } | null,
+): number | undefined {
+  const session = usage?.limits?.find((limit) => limit.kind === "session");
+  return session?.percent === undefined ? undefined : Math.round(session.percent);
+}
+
+interface CodexWindowLike {
+  used_percent: number;
+  limit_window_seconds: number;
+  reset_after_seconds: number;
+}
+
+/** 5h window usage percent from the Codex usage payload (weekly-only responses yield undefined). */
+export function codexSessionPercent(
+  usage: { rate_limit?: { primary_window?: CodexWindowLike; secondary_window?: CodexWindowLike } } | null,
+): number | undefined {
+  const day = 24 * 3600;
+  const window = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].find(
+    (w): w is CodexWindowLike => !!w && w.limit_window_seconds <= day && w.reset_after_seconds <= day,
+  );
+  return window ? Math.round(window.used_percent) : undefined;
+}
+
 export function isProviderRateLimitError(message: string | undefined): boolean {
   if (!message) return false;
   return /\b429\b|rate_limit_error|rate limit/i.test(message);
