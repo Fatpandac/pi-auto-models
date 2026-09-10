@@ -148,6 +148,9 @@ test('switching models immediately refreshes the selected provider quota', () =>
 
   assert.match(modelSelect, /refreshQuotaStatus\(ctx, true/);
   assert.match(source, /ctx\.model\?\.provider !== provider/);
+  // Quota lookup must not block the model switch.
+  assert.doesNotMatch(modelSelect, /await refreshQuotaStatus/);
+  assert.match(modelSelect, /catch\(\(\) => \{\}\)/);
 });
 
 test('/usage renders each provider account once', () => {

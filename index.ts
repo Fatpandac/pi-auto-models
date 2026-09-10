@@ -195,15 +195,16 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
-    await refreshQuotaStatus(ctx, true);
+    void refreshQuotaStatus(ctx, true).catch(() => {});
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    await refreshQuotaStatus(ctx);
+  pi.on("agent_end", (_event, ctx) => {
+    void refreshQuotaStatus(ctx).catch(() => {});
   });
 
-  pi.on("model_select", async (_event, ctx) => {
-    await refreshQuotaStatus(ctx, true);
+  pi.on("model_select", (_event, ctx) => {
+    // Fire-and-forget: the quota lookup must not delay the model switch.
+    void refreshQuotaStatus(ctx, true).catch(() => {});
   });
 
   pi.on("message_end", async (event, ctx) => {
