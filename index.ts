@@ -8,21 +8,22 @@
  * Caches the rate-limit expiry time to avoid repeated checks.
  * Detects 429 in after_provider_response to auto-switch and cache.
  *
- * /usage command shows each provider's 5h quota usage.
+ * /usage command shows each provider's available quota windows.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Text, SelectList, type SelectItem, matchesKey, Key } from "@earendil-works/pi-tui";
 import {
-  claudeSessionPercent,
-  codexSessionPercent,
+  claudeStatusQuota,
+  codexStatusQuota,
   getPassiveRateLimitCooldownMs,
   isClaudeUsageAvailable,
   isProviderRateLimitError,
   isRateLimitInfoStale,
   parseCooldownMs,
   type RateLimitInfo,
+  type StatusQuota,
 } from "./quota-utils.ts";
 import {
   type CodexUsage,
@@ -79,27 +80,27 @@ async function setModelTo(
   return true;
 }
 
-// ── 5h usage status bar ──
+// ── Subscription usage status bar ──
 
-const QUOTA_STATUS_KEY = "auto-model-5h";
+const QUOTA_STATUS_KEY = "auto-model-quota";
 const QUOTA_STATUS_TTL_MS = 60_000;
 
-function setQuotaStatus(ctx: ExtensionContext, pct: number | undefined): void {
+function setQuotaStatus(ctx: ExtensionContext, quota: StatusQuota | undefined): void {
   const { ui } = ctx;
-  if (pct === undefined) {
-    ui.setStatus(QUOTA_STATUS_KEY, ui.theme.fg("dim", "5h ?"));
+  if (!quota) {
+    ui.setStatus(QUOTA_STATUS_KEY, ui.theme.fg("dim", "Quota ?"));
     return;
   }
-  const color = pct >= 90 ? "error" : pct >= 70 ? "warning" : "success";
-  ui.setStatus(QUOTA_STATUS_KEY, ui.theme.fg(color, `5h ${pct}%`));
+  const color = quota.percent >= 90 ? "error" : quota.percent >= 70 ? "warning" : "success";
+  ui.setStatus(QUOTA_STATUS_KEY, ui.theme.fg(color, `${quota.label} ${quota.percent}%`));
 }
 
-/** Live 5h usage for OAuth (subscription) accounts; undefined when the provider has no session window. */
-async function fetch5hPercent(provider: string): Promise<number | undefined> {
+/** Live usage for the current OAuth subscription, preferring 5h over weekly. */
+async function fetchStatusQuota(provider: string): Promise<StatusQuota | undefined> {
   const entry = readAuth()[provider];
   if (!entry || Date.now() > entry.expires) return undefined;
-  if (provider === DEFAULT_PRIMARY_PROVIDER) return claudeSessionPercent(await fetchClaudeUsage(entry));
-  if (provider === DEFAULT_FALLBACK_PROVIDER) return codexSessionPercent(await fetchCodexUsage(entry));
+  if (provider === DEFAULT_PRIMARY_PROVIDER) return claudeStatusQuota(await fetchClaudeUsage(entry));
+  if (provider === DEFAULT_FALLBACK_PROVIDER) return codexStatusQuota(await fetchCodexUsage(entry));
   return undefined;
 }
 
@@ -120,7 +121,7 @@ export default function (pi: ExtensionAPI) {
   let quotaStatusAt = 0;
   let quotaStatusProvider: string | undefined;
 
-  /** Refresh the footer 5h usage for the active model; API-key accounts have no session limit. */
+  /** Refresh quota for the active model's subscription; API-key accounts have no subscription limit. */
   async function refreshQuotaStatus(ctx: ExtensionContext, force = false): Promise<void> {
     const model = ctx.model;
     if (!model) return;
@@ -128,18 +129,23 @@ export default function (pi: ExtensionAPI) {
     if (!force && !providerChanged && Date.now() - quotaStatusAt < QUOTA_STATUS_TTL_MS) return;
     quotaStatusAt = Date.now();
     quotaStatusProvider = model.provider;
+    const provider = model.provider;
+    if (providerChanged) setQuotaStatus(ctx, undefined);
 
     if (ctx.modelRegistry.isUsingOAuth?.(model) === false) {
-      ctx.ui.setStatus(QUOTA_STATUS_KEY, ctx.ui.theme.fg("dim", "5h ∞ (API key)"));
+      ctx.ui.setStatus(QUOTA_STATUS_KEY, ctx.ui.theme.fg("dim", "∞ (API key)"));
       return;
     }
     try {
-      setQuotaStatus(ctx, await fetch5hPercent(model.provider));
+      const quota = await fetchStatusQuota(provider);
+      if (ctx.model?.provider !== provider) return;
+      setQuotaStatus(ctx, quota);
     } catch {
+      if (ctx.model?.provider !== provider) return;
       // Live endpoint unavailable → fall back to passively captured headers.
-      const cached = rateLimits.get(model.provider);
+      const cached = rateLimits.get(provider);
       const usable = cached?.utilization && !isRateLimitInfoStale(cached);
-      setQuotaStatus(ctx, usable ? Math.round(Number(cached!.utilization) * 100) : undefined);
+      setQuotaStatus(ctx, usable ? { label: "5h", percent: Math.round(Number(cached!.utilization) * 100) } : undefined);
     }
   }
 
@@ -194,6 +200,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", async (_event, ctx) => {
     await refreshQuotaStatus(ctx);
+  });
+
+  pi.on("model_select", async (_event, ctx) => {
+    await refreshQuotaStatus(ctx, true);
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -533,7 +543,7 @@ export default function (pi: ExtensionAPI) {
         if (info.utilization && provider === ctx.model?.provider) {
           quotaStatusAt = Date.now();
           quotaStatusProvider = provider;
-          setQuotaStatus(ctx, Math.round(Number(info.utilization) * 100));
+          setQuotaStatus(ctx, { label: "5h", percent: Math.round(Number(info.utilization) * 100) });
         }
       }
     }

@@ -7,7 +7,7 @@ A [pi](https://pi.dev) extension that automatically switches between a **primary
 - **Auto-switch on quota** — on each session start it uses the primary model if quota is available, otherwise the fallback.
 - **429/529 recovery** — detects rate-limit responses, caches the cooldown, and switches to the fallback mid-session.
 - **Passive quota tracking** — reads rate-limit headers from provider responses (no extra requests for Claude); Codex quota is fetched live.
-- **5h usage in the status bar** — footer shows the active account's 5h usage (`5h 42%`), refreshed from response headers when possible and at most once a minute otherwise. API-key accounts have no session limit, so they show `5h ∞ (API key)`.
+- **Subscription usage in the status bar** — footer follows the active model's provider and shows its 5h usage when available (`5h 42%`), otherwise its weekly usage (`Weekly 42%`). API-key accounts show `∞ (API key)`.
 - **`/usage`** — shows each provider's quota windows (Codex windows are labelled by their actual duration, so it adapts if OpenAI drops the 5h window).
 - **`/auto-model`** — interactive TUI to configure the primary/fallback model and thinking level.
 

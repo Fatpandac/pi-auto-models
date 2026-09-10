@@ -99,36 +99,55 @@ test('formatWindowLabel labels windows by real duration, not position', async ()
   assert.equal(formatWindowLabel(30 * 24 * 3600), '30d');
 });
 
-test('picks the 5h window for the status bar, ignoring weekly-only data', () => {
-  const { claudeSessionPercent, codexSessionPercent } = quotaUtils;
+test('picks 5h usage for the status bar when both subscription windows exist', () => {
+  const { claudeStatusQuota, codexStatusQuota } = quotaUtils;
 
-  assert.equal(claudeSessionPercent({ limits: [{ kind: 'weekly_all', percent: 80 }, { kind: 'session', percent: 42.4 }] }), 42);
-  assert.equal(claudeSessionPercent({ limits: [{ kind: 'weekly_all', percent: 80 }] }), undefined);
-  assert.equal(
-    codexSessionPercent({
+  assert.deepEqual(
+    claudeStatusQuota({ limits: [{ kind: 'weekly_all', percent: 80 }, { kind: 'session', percent: 42.4 }] }),
+    { label: '5h', percent: 42 },
+  );
+  assert.deepEqual(
+    codexStatusQuota({
       rate_limit: {
         primary_window: { used_percent: 13.6, limit_window_seconds: 5 * 3600, reset_after_seconds: 3600 },
         secondary_window: { used_percent: 70, limit_window_seconds: 7 * 24 * 3600, reset_after_seconds: 5 * 24 * 3600 },
       },
     }),
-    14,
-  );
-  // Codex may report a 5h window duration while only the weekly window is live.
-  assert.equal(
-    codexSessionPercent({
-      rate_limit: { primary_window: { used_percent: 13, limit_window_seconds: 5 * 3600, reset_after_seconds: 6 * 24 * 3600 } },
-    }),
-    undefined,
+    { label: '5h', percent: 14 },
   );
 });
 
-test('status bar shows 5h usage and handles API-key accounts without limits', () => {
+test('falls back to weekly usage when the current subscription has no live 5h window', () => {
+  const { claudeStatusQuota, codexStatusQuota } = quotaUtils;
+
+  assert.deepEqual(claudeStatusQuota({ limits: [{ kind: 'weekly_all', percent: 80.2 }] }), {
+    label: 'Weekly',
+    percent: 80,
+  });
+  // Codex may retain the old 5h duration while only the weekly window is live.
+  assert.deepEqual(
+    codexStatusQuota({
+      rate_limit: { primary_window: { used_percent: 13, limit_window_seconds: 5 * 3600, reset_after_seconds: 6 * 24 * 3600 } },
+    }),
+    { label: 'Weekly', percent: 13 },
+  );
+});
+
+test('status bar shows current subscription usage and handles API-key accounts without limits', () => {
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
 
   assert.match(source, /setStatus\(QUOTA_STATUS_KEY/);
   assert.match(source, /isUsingOAuth\?\.\(model\) === false/);
-  assert.match(source, /5h \u221e \(API key\)|5h ∞ \(API key\)/);
+  assert.match(source, /∞ \(API key\)/);
   assert.match(source, /pi\.on\("agent_end"/);
+});
+
+test('switching models immediately refreshes the selected provider quota', () => {
+  const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+  const modelSelect = source.match(/pi\.on\("model_select"[\s\S]*?\n\s*\}\);/)?.[0] ?? '';
+
+  assert.match(modelSelect, /refreshQuotaStatus\(ctx, true/);
+  assert.match(source, /ctx\.model\?\.provider !== provider/);
 });
 
 test('/usage renders each provider account once', () => {

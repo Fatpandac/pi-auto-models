@@ -39,12 +39,19 @@ export function isClaudeUsageAvailable(usage: { limits?: { percent?: number }[] 
   return usage.limits.every((limit) => (limit.percent ?? 0) < 100);
 }
 
-/** 5h ("session") usage percent from the Anthropic OAuth usage payload. */
-export function claudeSessionPercent(
+export interface StatusQuota {
+  label: "5h" | "Weekly";
+  percent: number;
+}
+
+/** Prefer the subscription's 5h limit; fall back to its weekly limit. */
+export function claudeStatusQuota(
   usage: { limits?: { kind?: string; percent?: number }[] } | null,
-): number | undefined {
-  const session = usage?.limits?.find((limit) => limit.kind === "session");
-  return session?.percent === undefined ? undefined : Math.round(session.percent);
+): StatusQuota | undefined {
+  const limit = usage?.limits?.find((item) => item.kind === "session")
+    ?? usage?.limits?.find((item) => item.kind === "weekly_all");
+  if (limit?.percent === undefined) return undefined;
+  return { label: limit.kind === "session" ? "5h" : "Weekly", percent: Math.round(limit.percent) };
 }
 
 interface CodexWindowLike {
@@ -53,15 +60,20 @@ interface CodexWindowLike {
   reset_after_seconds: number;
 }
 
-/** 5h window usage percent from the Codex usage payload (weekly-only responses yield undefined). */
-export function codexSessionPercent(
+/** Prefer a live 5h Codex window; Pro accounts that only expose a weekly window fall back to Weekly. */
+export function codexStatusQuota(
   usage: { rate_limit?: { primary_window?: CodexWindowLike; secondary_window?: CodexWindowLike } } | null,
-): number | undefined {
+): StatusQuota | undefined {
   const day = 24 * 3600;
-  const window = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].find(
-    (w): w is CodexWindowLike => !!w && w.limit_window_seconds <= day && w.reset_after_seconds <= day,
+  const windows = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].filter(
+    (window): window is CodexWindowLike => !!window,
   );
-  return window ? Math.round(window.used_percent) : undefined;
+  const session = windows.find((window) => window.limit_window_seconds <= day && window.reset_after_seconds <= day);
+  const window = session ?? windows.reduce<CodexWindowLike | undefined>(
+    (latest, item) => !latest || item.reset_after_seconds > latest.reset_after_seconds ? item : latest,
+    undefined,
+  );
+  return window ? { label: session ? "5h" : "Weekly", percent: Math.round(window.used_percent) } : undefined;
 }
 
 export function isProviderRateLimitError(message: string | undefined): boolean {
